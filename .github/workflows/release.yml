@@ -1,0 +1,25 @@
+name: Release
+
+# 推送形如 v1.0.0 的标签时创建 GitHub Release（镜像构建由 docker-image.yml 负责）
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # 创建 Release 需要写权限
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            Docker 镜像已发布：
+
+            ```bash
+            docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/awrelay:${{ github.ref_name }}
+            ```

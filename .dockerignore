@@ -1,0 +1,22 @@
+# 防止敏感信息与无关文件被打包进镜像
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 版本控制与工具
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+README.md
