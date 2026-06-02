@@ -3,8 +3,14 @@ services:
     image: awdress/awrelay:latest # Docker Hub 镜像，如非本人请替换为对应用户名
     container_name: AWRelay
     restart: unless-stopped
-    # 从 .env 文件读取 BOT_TOKEN / ADMIN_ID / PROXY_URL，避免在此明文暴露 Token
-    env_file:
-      - .env
+    # host 网络模式：容器与宿主机共用网络栈，可直接用 127.0.0.1 访问宿主机本地代理（仅 Linux 有效）
+    network_mode: host
+    # 环境变量直接在此声明，替换为你的实际值（不再依赖 .env 文件）
+    environment:
+      - BOT_TOKEN=你的BotToken
+      - ADMIN_ID=你的管理员数字ID
+      # 需要代理才能访问 Telegram 时填写；host 模式下可直接写宿主机本地代理，如 http://127.0.0.1:7890
+      # 服务器能直连则留空
+      - PROXY_URL=
     volumes:
-      - ./data:/app/data
+      - /data/AWRelay/data:/app/data
