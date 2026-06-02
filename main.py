@@ -333,14 +333,22 @@ async def unban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def build_user_header(user, chat_id):
-    """构造用户来源信息（HTML），用于附加在转发内容上"""
-    name = html.escape(f"{user.first_name or ''} {user.last_name or ''}".strip() or "未知")
-    username = f"@{html.escape(user.username)}" if user.username else "无"
+    """构造用户来源信息（HTML），用于附加在转发内容上。
+    将名字本身做成超链接，点击即可打开用户资料（等同 @ 提及），无需再单独显示 @用户名。"""
+    name = (f"{user.first_name or ''} {user.last_name or ''}".strip()
+            or (f"@{user.username}" if user.username else "未知"))
+    link = f'<a href="tg://user?id={user.id}">{html.escape(name)}</a>'
     return (
-        f"👤 <b>{name}</b>　{username}\n"
-        f"🆔 <code>{chat_id}</code>\n"
+        f"👤 <b>{link}</b>　🆔 <code>{chat_id}</code>\n"
         f"━━━━━━━━━━━━━━"
     )
+
+
+def supports_caption(msg):
+    """判断该消息类型是否支持 caption。
+    只有 图片/视频/音频/动画(GIF)/文档/语音 支持；
+    贴纸、视频笔记、位置、联系人、投票、骰子等不支持——给它们传 caption 会被 Telegram 静默忽略。"""
+    return bool(msg.photo or msg.video or msg.audio or msg.animation or msg.document or msg.voice)
 
 
 async def forward_to_admin(context, chat_id, user, messages):
@@ -360,23 +368,25 @@ async def forward_to_admin(context, chat_id, user, messages):
             await asyncio.to_thread(database.save_mapping, sent.message_id, chat_id, mid)
             return
 
-        # 带媒体的消息：把来源信息作为 caption 前缀，保留用户原始说明文字
-        orig_caption = msg.caption or ""
-        new_caption = header + (f"\n{html.escape(orig_caption)}" if orig_caption else "")
-        try:
+        # 支持 caption 的媒体（图片/视频/音频/动画/文档/语音）：把来源信息作为 caption 前缀
+        # 注意：贴纸/视频笔记/位置/联系人等不支持 caption，copy_message 会“静默忽略” caption 而非报错，
+        # 因此必须在调用前判断类型，否则信息头会丢失（贴纸显示不出发送者）。
+        if supports_caption(msg):
+            orig_caption = msg.caption or ""
+            new_caption = header + (f"\n{html.escape(orig_caption)}" if orig_caption else "")
             sent = await context.bot.copy_message(
                 chat_id=ADMIN_ID, from_chat_id=chat_id, message_id=mid,
                 caption=new_caption, parse_mode="HTML",
             )
             await asyncio.to_thread(database.save_mapping, sent.message_id, chat_id, mid)
             return
-        except Exception:
-            # 贴纸/语音/视频笔记等不支持 caption，退回“信息 + 内容”两步
-            info_msg = await context.bot.send_message(chat_id=ADMIN_ID, text=header, parse_mode="HTML")
-            await asyncio.to_thread(database.save_mapping, info_msg.message_id, chat_id, mid)
-            fwd_msg = await context.bot.copy_message(chat_id=ADMIN_ID, from_chat_id=chat_id, message_id=mid)
-            await asyncio.to_thread(database.save_mapping, fwd_msg.message_id, chat_id, mid)
-            return
+
+        # 不支持 caption 的内容（贴纸/语音笔记/视频笔记/位置等）：先发来源信息，再发内容，两条都建立映射
+        info_msg = await context.bot.send_message(chat_id=ADMIN_ID, text=header, parse_mode="HTML")
+        await asyncio.to_thread(database.save_mapping, info_msg.message_id, chat_id, mid)
+        fwd_msg = await context.bot.copy_message(chat_id=ADMIN_ID, from_chat_id=chat_id, message_id=mid)
+        await asyncio.to_thread(database.save_mapping, fwd_msg.message_id, chat_id, mid)
+        return
 
     # 媒体组（多条）：先发一条来源信息，再整组转发
     info_msg = await context.bot.send_message(chat_id=ADMIN_ID, text=header, parse_mode="HTML")
@@ -532,6 +542,23 @@ async def post_init(application):
     )
     me = await application.bot.get_me()
     log.info(f"机器人已上线：@{me.username}（正在监听消息）")
+
+    # 向管理员发送启动成功提醒（管理员需先与机器人私聊过，否则发送会失败，此处静默忽略不影响启动）
+    startup_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    proxy_line = f"\n🌐 代理：<code>{html.escape(PROXY_URL)}</code>" if PROXY_URL else ""
+    try:
+        await application.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"✅ <b>AWRelay 已启动</b>\n\n"
+                f"🤖 机器人：@{me.username}\n"
+                f"🕐 时间：{startup_time}{proxy_line}\n\n"
+                f"正在监听并转发消息。"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        log.warning(f"发送启动提醒失败（管理员可能尚未与机器人私聊）：{e}")
 
 
 # 全局持有锁文件句柄，进程存活期间不释放
