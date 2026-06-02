@@ -1,0 +1,2 @@
+# 确保 shell 脚本始终使用 LF 换行，避免 Windows 检出为 CRLF 导致容器内 sh 解析失败
+*.sh text eol=lf

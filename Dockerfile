@@ -8,7 +8,8 @@ ENV TZ=Asia/Shanghai \
     PYTHONDONTWRITEBYTECODE=1
 
 # slim 镜像默认不含时区数据，需安装 tzdata，否则日志时间会是 UTC
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+# gosu 用于在 entrypoint 中安全地从 root 降权到 appuser
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata gosu \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
@@ -18,12 +19,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# 创建非 root 用户运行，并赋予数据目录写权限
-# 注意：若部署到 Linux 服务器且 ./data 属主为 root，需 chown 宿主目录给 UID 1000，否则容器内无法写入
-RUN useradd -m appuser && mkdir -p /app/data && chown -R appuser:appuser /app
-USER appuser
+# 创建运行用户并准备数据目录
+RUN useradd -m appuser && mkdir -p /app/data && chown -R appuser:appuser /app \
+    && chmod +x /app/entrypoint.sh
 
 # 数据库文件持久化目录
 VOLUME /app/data
 
+# 以 root 启动 entrypoint，运行时修正 bind mount 数据目录属主后降权到 appuser，
+# 这样无论宿主机 ./data 属主是谁，镜像都能开箱即用。
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "main.py"]
