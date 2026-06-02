@@ -53,9 +53,10 @@ python main.py
 
 ```bash
 # 确保已创建并填好 .env
-docker compose up -d --build   # 首次或改动代码后用 --build
-docker compose logs -f         # 查看日志
-docker compose down            # 停止
+docker compose pull           # 拉取最新镜像
+docker compose up -d          # 启动
+docker compose logs -f        # 查看日志
+docker compose down           # 停止
 ```
 
 数据（数据库 + 日志）持久化在 `./data` 目录。

@@ -1,8 +1,6 @@
 services:
   AWRelay:
-    # 本地用源码构建镜像；image 同时作为构建后的镜像名（如需推送到 Docker Hub 请替换）
-    build: .
-    image: awdress/awrelay:latest
+    image: awdress/awrelay:latest # Docker Hub 镜像，如非本人请替换为对应用户名
     container_name: AWRelay
     restart: unless-stopped
     # 从 .env 文件读取 BOT_TOKEN / ADMIN_ID / PROXY_URL，避免在此明文暴露 Token
