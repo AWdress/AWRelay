@@ -592,7 +592,21 @@ if __name__ == '__main__':
     database.init_db()
 
     # 配置应用
-    builder = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init)
+    # 显式设置网络超时：缺少读超时时，代理/网络中途断开会让 get_updates 永久阻塞在死 socket 上，
+    # 导致 PTB 的自动重试永远无法触发，网络恢复后也不自愈（表现为必须重启容器）。
+    # 设定超时后，卡住的请求会超时抛错，重试机制即可接管并重新建立连接。
+    builder = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .connect_timeout(20.0)              # 建立连接（含经代理）的超时
+        .read_timeout(20.0)                 # 普通请求读取超时
+        .write_timeout(20.0)                # 请求写入超时
+        .pool_timeout(20.0)                 # 从连接池获取连接的超时
+        .get_updates_connect_timeout(20.0)  # 轮询请求的连接超时
+        .get_updates_read_timeout(40.0)     # 轮询读超时，须大于长轮询 timeout(默认10s)，留足余量
+        .get_updates_pool_timeout(20.0)
+    )
 
     # 如果配置了代理，则设置代理
     if PROXY_URL:
