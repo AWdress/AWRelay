@@ -8,6 +8,7 @@ from collections import defaultdict, deque
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, BotCommandScopeDefault
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 import database
 
@@ -51,8 +52,13 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 # 屏蔽第三方库的刷屏日志（如 httpx 每次轮询都打印的 HTTP 请求），只保留警告及以上
-for noisy in ("httpx", "httpcore", "apscheduler", "telegram.ext.Application", "telegram.ext.Updater"):
+for noisy in ("httpx", "httpcore", "apscheduler", "telegram.ext.Application"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
+
+# Updater 在轮询失败时会以 ERROR 级直接打印 "Error while getting Updates" 并附堆栈，
+# 断网/代理抖动期间会持续刷屏。这类错误可自动重试，由全局 error_handler 统一记一行警告即可，
+# 故将其日志级别提到 CRITICAL，仅保留真正致命的信息。
+logging.getLogger("telegram.ext.Updater").setLevel(logging.CRITICAL)
 
 log = logging.getLogger("AWRelay")
 
@@ -508,8 +514,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """全局错误兜底，避免异常静默或导致 handler 中断"""
-    log.error("处理更新时发生异常：", exc_info=context.error)
+    """全局错误兜底，避免异常静默或导致 handler 中断。
+    网络类错误（断网/代理抖动/超时）属可自动重试的瞬时故障，仅记一行简短警告，
+    不打印完整堆栈以免断网期间刷屏；其余未预期错误仍记录完整堆栈便于排查。"""
+    err = context.error
+    if isinstance(err, (NetworkError, TimedOut)):
+        log.warning(f"网络异常，正在自动重试：{err}")
+        return
+    log.error("处理更新时发生异常：", exc_info=err)
 
 
 async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
