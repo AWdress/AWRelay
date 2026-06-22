@@ -365,7 +365,9 @@ async def get_or_create_topic(bot, user, chat_id) -> int:
     topic_id = topic.message_thread_id
     await asyncio.to_thread(database.save_topic, chat_id, topic_id)
 
-    info = f'<a href="tg://user?id={chat_id}">{html.escape(base)}</a>　🆔 <code>{chat_id}</code>'
+    name_link = f'<a href="tg://user?id={chat_id}">{html.escape(base)}</a>'
+    username_part = f"  @{html.escape(user.username)}" if user.username else ""
+    info = f"{name_link}{username_part}\n🆔 <code>{chat_id}</code>"
     await bot.send_message(
         chat_id=GROUP_ID, message_thread_id=topic_id,
         text=info, parse_mode="HTML"
@@ -477,6 +479,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 【情况一】来自话题群组的消息（管理员发出）
     if chat_id == GROUP_ID:
+        # 服务消息（话题创建等）无发送者，直接忽略
+        if not update.effective_user:
+            return
         # 1a. 回复某条转发消息 → 查映射回传（/ban 等指令也依赖此分支）
         if update.message.reply_to_message:
             admin_states.pop(ADMIN_ID, None)
