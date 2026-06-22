@@ -426,7 +426,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 【情况一】来自话题群组的消息（管理员发出）
     if chat_id == GROUP_ID:
-        # 1a. 回复某条转发消息 → 查映射回传（同时用于 /ban 等指令的上下文）
+        # 1a. 回复某条转发消息 → 查映射回传（/ban 等指令也依赖此分支）
         if update.message.reply_to_message:
             admin_states.pop(ADMIN_ID, None)
             admin_msg_id = update.message.reply_to_message.message_id
@@ -444,11 +444,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"❌ 发送失败，用户可能已屏蔽机器人。\n<code>{html.escape(str(e))}</code>",
                         parse_mode="HTML",
                     )
-            else:
+                return
+            # 未找到映射：Telegram 话题内所有消息的 reply_to_message 都指向话题服务消息，
+            # 并非管理员主动回复，此时直接走话题路由而非报错。
+            if not update.message.is_topic_message:
                 await update.message.reply_text("⚠️ 找不到该消息对应的发送者（可能是旧消息或非转发消息）。")
-            return
+                return
+            # is_topic_message=True 时，交由下方 1b 话题路由处理
 
-        # 1b. 在用户话题中直接发送（非回复）→ 通过话题 ID 查用户并回传
+        # 1b. 话题内直接发送（或回复话题服务消息）→ 通过话题 ID 查用户并回传
         if update.message.is_topic_message and update.message.message_thread_id:
             topic_id = update.message.message_thread_id
             user_chat_id = await asyncio.to_thread(database.get_user_by_topic, topic_id)
