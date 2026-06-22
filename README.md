@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.png" alt="AWRelay" width="180">
+  <img src="logo.png" alt="AWRelay" width="240">
 
 
   <p>轻量、自托管的 Telegram 私聊消息中转机器人</p>
