@@ -15,12 +15,18 @@ import database
 # 加载环境变量
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))   # 管理员本人的 Telegram 数字 ID（用于指令权限校验）
+GROUP_ID = int(os.getenv("GROUP_ID", "0"))    # 话题群组的 Chat ID（负数，用于消息路由）
 PROXY_URL = os.getenv("PROXY_URL", "")
 
-if not BOT_TOKEN or ADMIN_ID == 0:
-    print("请检查 .env 文件，确保已配置 BOT_TOKEN 和 ADMIN_ID")
+if not BOT_TOKEN or ADMIN_ID == 0 or GROUP_ID == 0:
+    print("请检查配置，确保已设置 BOT_TOKEN、ADMIN_ID 和 GROUP_ID")
     exit(1)
+
+
+def is_admin(update) -> bool:
+    """消息是否由管理员本人发出（在群组内或私聊均适用）"""
+    return bool(update.effective_user and update.effective_user.id == ADMIN_ID)
 
 # 确保日志目录存在
 os.makedirs("data", exist_ok=True)
@@ -189,7 +195,7 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """打开设置菜单"""
-    if update.effective_chat.id != ADMIN_ID:
+    if not is_admin(update):
         return
     text, reply_markup = build_menu_text_and_keyboard()
     await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
@@ -197,7 +203,7 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """显示帮助信息"""
-    if update.effective_chat.id == ADMIN_ID:
+    if is_admin(update):
         text = (
             "📖 <b>管理员指南</b>\n"
             "━━━━━━━━━━━━━━\n"
@@ -220,7 +226,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """取消当前的等待输入状态"""
-    if update.effective_chat.id != ADMIN_ID:
+    if not is_admin(update):
         return
     if admin_states.pop(ADMIN_ID, None):
         await update.message.reply_text("✅ 已取消当前操作。")
@@ -231,7 +237,7 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理菜单按钮点击"""
     query = update.callback_query
-    if query.message.chat.id != ADMIN_ID:
+    if not (update.effective_user and update.effective_user.id == ADMIN_ID):
         await query.answer("无权限", show_alert=True)
         return
 
@@ -268,7 +274,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /start 命令"""
     chat_id = update.effective_chat.id
-    if chat_id == ADMIN_ID:
+    if is_admin(update):
         await update.message.reply_text(
             "👑 <b>欢迎回来，管理员</b>\n"
             "━━━━━━━━━━━━━━\n"
@@ -296,7 +302,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """管理员拉黑用户"""
-    if update.effective_chat.id != ADMIN_ID:
+    if not is_admin(update):
         return
     if not update.message.reply_to_message:
         await update.message.reply_text("ℹ️ 请<b>回复</b>需要拉黑的用户消息，再发送 /ban", parse_mode="HTML")
@@ -318,7 +324,7 @@ async def ban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def unban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """管理员解除拉黑"""
-    if update.effective_chat.id != ADMIN_ID:
+    if not is_admin(update):
         return
     if not update.message.reply_to_message:
         await update.message.reply_text("ℹ️ 请<b>回复</b>需要解除拉黑的用户消息，再发送 /unban", parse_mode="HTML")
@@ -354,7 +360,7 @@ async def get_or_create_topic(bot, user, chat_id) -> int:
     name = f"{user.first_name or ''} {user.last_name or ''}".strip() or f"用户{chat_id}"
     name = name[:120] + f" · {chat_id}"
 
-    topic = await bot.create_forum_topic(chat_id=ADMIN_ID, name=name)
+    topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=name)
     topic_id = topic.message_thread_id
     await asyncio.to_thread(database.save_topic, chat_id, topic_id)
 
@@ -363,7 +369,7 @@ async def get_or_create_topic(bot, user, chat_id) -> int:
     if user.username:
         info += f"\n📎 @{html.escape(user.username)}"
     await bot.send_message(
-        chat_id=ADMIN_ID, message_thread_id=topic_id,
+        chat_id=GROUP_ID, message_thread_id=topic_id,
         text=info, parse_mode="HTML"
     )
     log.info(f"为用户 {chat_id} ({name}) 创建了新话题 {topic_id}")
@@ -377,7 +383,7 @@ async def forward_to_topic(context, chat_id, user, messages):
     for msg in messages:
         try:
             sent = await context.bot.copy_message(
-                chat_id=ADMIN_ID,
+                chat_id=GROUP_ID,
                 from_chat_id=chat_id,
                 message_id=msg.message_id,
                 message_thread_id=topic_id,
@@ -405,7 +411,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
 
     # 【情况一】来自话题群组的消息（管理员发出）
-    if chat_id == ADMIN_ID:
+    if chat_id == GROUP_ID:
         # 1a. 回复某条转发消息 → 查映射回传（同时用于 /ban 等指令的上下文）
         if update.message.reply_to_message:
             admin_states.pop(ADMIN_ID, None)
@@ -416,7 +422,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.copy_message(
                         chat_id=user_chat_id,
-                        from_chat_id=ADMIN_ID,
+                        from_chat_id=GROUP_ID,
                         message_id=msg_id,
                     )
                 except Exception as e:
@@ -436,7 +442,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.copy_message(
                         chat_id=user_chat_id,
-                        from_chat_id=ADMIN_ID,
+                        from_chat_id=GROUP_ID,
                         message_id=msg_id,
                     )
                 except Exception as e:
@@ -549,7 +555,7 @@ async def post_init(application):
             BotCommand("cancel", "取消当前操作"),
             BotCommand("help", "使用帮助"),
         ],
-        scope=BotCommandScopeChat(chat_id=ADMIN_ID),
+        scope=BotCommandScopeChat(chat_id=GROUP_ID),
     )
     me = await application.bot.get_me()
     log.info(f"机器人已上线：@{me.username}（正在监听消息）")
@@ -558,7 +564,7 @@ async def post_init(application):
     proxy_line = f"\n代理：<code>{html.escape(PROXY_URL)}</code>" if PROXY_URL else ""
     try:
         await application.bot.send_message(
-            chat_id=ADMIN_ID,
+            chat_id=GROUP_ID,
             text=(
                 f"<b>AWRelay 已启动</b>\n\n"
                 f"机器人：@{me.username}\n"
