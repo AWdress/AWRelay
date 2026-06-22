@@ -127,6 +127,14 @@ def get_user_by_topic(topic_id):
         return row[0] if row else None
 
 
+def delete_topic(user_chat_id):
+    """删除用户的话题缓存（话题被删除后需清除，以便重建）"""
+    with _lock:
+        conn = _get_conn()
+        conn.execute('DELETE FROM topics WHERE user_chat_id = ?', (user_chat_id,))
+        conn.commit()
+
+
 def ban_user(user_chat_id):
     """将用户加入黑名单"""
     with _lock:

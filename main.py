@@ -402,7 +402,21 @@ async def forward_to_topic(context, chat_id, user, messages):
             )
             await asyncio.to_thread(database.save_mapping, sent.message_id, chat_id, msg.message_id)
         except Exception as e:
-            log.error(f"转发消息到话题失败：{e}")
+            err = str(e).lower()
+            if "message thread not found" in err or "topic_deleted" in err or "topic_closed" in err:
+                # 话题已被删除，清除缓存并重建
+                log.warning(f"话题 {topic_id} 已删除，正在为用户 {chat_id} 重建")
+                await asyncio.to_thread(database.delete_topic, chat_id)
+                topic_id = await get_or_create_topic(context.bot, user, chat_id)
+                sent = await context.bot.copy_message(
+                    chat_id=GROUP_ID,
+                    from_chat_id=chat_id,
+                    message_id=msg.message_id,
+                    message_thread_id=topic_id,
+                )
+                await asyncio.to_thread(database.save_mapping, sent.message_id, chat_id, msg.message_id)
+            else:
+                log.error(f"转发消息到话题失败：{e}")
 
 
 async def flush_media_group(context: ContextTypes.DEFAULT_TYPE):
