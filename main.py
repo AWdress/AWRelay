@@ -431,6 +431,45 @@ async def flush_media_group(context: ContextTypes.DEFAULT_TYPE):
         log.error(f"媒体组转发失败：{e}")
 
 
+async def send_to_user(bot, user_chat_id: int, src_msg):
+    """将管理员的消息发给用户。优先 copy_message；若群组开启了「限制保存内容」导致复制失败，
+    则直接提取内容重发，绕开内容保护限制。"""
+    try:
+        await bot.copy_message(
+            chat_id=user_chat_id,
+            from_chat_id=GROUP_ID,
+            message_id=src_msg.message_id,
+        )
+        return
+    except Exception as e:
+        if "can't be copied" not in str(e).lower():
+            raise  # 非内容保护类错误，继续向上抛
+
+    # 内容保护导致复制失败，直接提取内容重发
+    if src_msg.text:
+        await bot.send_message(chat_id=user_chat_id, text=src_msg.text)
+    elif src_msg.photo:
+        await bot.send_photo(chat_id=user_chat_id, photo=src_msg.photo[-1].file_id,
+                             caption=src_msg.caption)
+    elif src_msg.video:
+        await bot.send_video(chat_id=user_chat_id, video=src_msg.video.file_id,
+                             caption=src_msg.caption)
+    elif src_msg.document:
+        await bot.send_document(chat_id=user_chat_id, document=src_msg.document.file_id,
+                                caption=src_msg.caption)
+    elif src_msg.audio:
+        await bot.send_audio(chat_id=user_chat_id, audio=src_msg.audio.file_id,
+                             caption=src_msg.caption)
+    elif src_msg.voice:
+        await bot.send_voice(chat_id=user_chat_id, voice=src_msg.voice.file_id)
+    elif src_msg.sticker:
+        await bot.send_sticker(chat_id=user_chat_id, sticker=src_msg.sticker.file_id)
+    elif src_msg.video_note:
+        await bot.send_video_note(chat_id=user_chat_id, video_note=src_msg.video_note.file_id)
+    else:
+        raise ValueError("不支持的消息类型，无法转发")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理所有文本和多媒体消息"""
     chat_id = update.effective_chat.id
@@ -446,11 +485,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if mapping:
                 user_chat_id = mapping[0]
                 try:
-                    await context.bot.copy_message(
-                        chat_id=user_chat_id,
-                        from_chat_id=GROUP_ID,
-                        message_id=msg_id,
-                    )
+                    await send_to_user(context.bot, user_chat_id, update.message)
                 except Exception as e:
                     await update.message.reply_text(
                         f"❌ 发送失败，用户可能已屏蔽机器人。\n<code>{html.escape(str(e))}</code>",
@@ -470,11 +505,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_chat_id = await asyncio.to_thread(database.get_user_by_topic, topic_id)
             if user_chat_id:
                 try:
-                    await context.bot.copy_message(
-                        chat_id=user_chat_id,
-                        from_chat_id=GROUP_ID,
-                        message_id=msg_id,
-                    )
+                    await send_to_user(context.bot, user_chat_id, update.message)
                 except Exception as e:
                     await update.message.reply_text(
                         f"❌ 发送失败，用户可能已屏蔽机器人。\n<code>{html.escape(str(e))}</code>",
