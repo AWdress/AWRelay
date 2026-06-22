@@ -366,8 +366,6 @@ async def get_or_create_topic(bot, user, chat_id) -> int:
     await asyncio.to_thread(database.save_topic, chat_id, topic_id)
 
     info = f'<a href="tg://user?id={chat_id}">{html.escape(base)}</a>　🆔 <code>{chat_id}</code>'
-    if user.username:
-        info += f"\n📎 @{html.escape(user.username)}"
     await bot.send_message(
         chat_id=GROUP_ID, message_thread_id=topic_id,
         text=info, parse_mode="HTML"
