@@ -350,21 +350,21 @@ def supports_caption(msg):
 
 
 async def get_or_create_topic(bot, user, chat_id) -> int:
-    """获取或创建该用户在话题群组中对应的话题，返回 message_thread_id。
-    首次创建时以用户名命名话题，并发送一条用户信息卡片。"""
+    """获取或创建该用户在话题群组中对应的话题，返回 message_thread_id。"""
     topic_id = await asyncio.to_thread(database.get_topic, chat_id)
     if topic_id:
         return topic_id
 
-    # 话题名称：显示名 + ID，最长 128 字符
-    name = f"{user.first_name or ''} {user.last_name or ''}".strip() or f"用户{chat_id}"
-    name = name[:120] + f" · {chat_id}"
+    # 话题名称不超过 128 字符（Telegram 限制）
+    suffix = f" · {chat_id}"                   # 最多 14 字符（3 + 最长10位ID）
+    base = (f"{user.first_name or ''} {user.last_name or ''}".strip()
+            or f"用户{chat_id}")
+    name = base[:128 - len(suffix)] + suffix
 
     topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=name)
     topic_id = topic.message_thread_id
     await asyncio.to_thread(database.save_topic, chat_id, topic_id)
 
-    # 发送用户信息卡片作为话题首条消息
     info = f"🆔 <code>{chat_id}</code>"
     if user.username:
         info += f"\n📎 @{html.escape(user.username)}"
@@ -378,7 +378,21 @@ async def get_or_create_topic(bot, user, chat_id) -> int:
 
 async def forward_to_topic(context, chat_id, user, messages):
     """将用户消息转发到话题群组中对应的话题，并保存映射。"""
-    topic_id = await get_or_create_topic(context.bot, user, chat_id)
+    try:
+        topic_id = await get_or_create_topic(context.bot, user, chat_id)
+    except Exception as e:
+        # 话题创建失败（群组未开启话题功能、bot 缺少管理话题权限等）
+        log.error(f"创建话题失败（用户 {chat_id}）：{e}", exc_info=True)
+        try:
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                text=f"⚠️ 无法为用户 <code>{chat_id}</code> 创建话题：\n<code>{html.escape(str(e))}</code>\n\n"
+                     f"请确认群组已开启「话题」功能且 bot 拥有「管理话题」权限。",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        raise
 
     for msg in messages:
         try:
