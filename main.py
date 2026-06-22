@@ -710,7 +710,7 @@ if __name__ == '__main__':
     application.add_handler(CallbackQueryHandler(menu_callback))
 
     # 监听所有类型的消息（文本、图片、视频、文件等），排除命令
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.StatusUpdate.ALL, handle_message))
 
     # 全局错误处理
     application.add_error_handler(error_handler)
