@@ -8,7 +8,7 @@ services:
     # 环境变量直接在此声明，替换为你的实际值（不再依赖 .env 文件）
     environment:
       - BOT_TOKEN=你的BotToken
-      - ADMIN_ID=你的管理员数字ID
+      - ADMIN_ID=话题群组的Chat_ID（负数，如-1001234567890）
       # 需要代理才能访问 Telegram 时填写；host 模式下可直接写宿主机本地代理，如 http://127.0.0.1:7890
       # 服务器能直连则留空
       - PROXY_URL=

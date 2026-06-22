@@ -338,68 +338,53 @@ async def unban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ 找不到该消息对应的发送者（可能是旧消息或非转发消息）。")
 
 
-def build_user_header(user, chat_id):
-    """构造用户来源信息（HTML），用于附加在转发内容上。
-    将名字本身做成超链接，点击即可打开用户资料（等同 @ 提及），无需再单独显示 @用户名。"""
-    name = (f"{user.first_name or ''} {user.last_name or ''}".strip()
-            or (f"@{user.username}" if user.username else "未知"))
-    link = f'<a href="tg://user?id={user.id}">{html.escape(name)}</a>'
-    return (
-        f"👤 <b>{link}</b>　🆔 <code>{chat_id}</code>\n"
-        f"━━━━━━━━━━━━━━"
-    )
-
-
 def supports_caption(msg):
-    """判断该消息类型是否支持 caption。
-    只有 图片/视频/音频/动画(GIF)/文档/语音 支持；
-    贴纸、视频笔记、位置、联系人、投票、骰子等不支持——给它们传 caption 会被 Telegram 静默忽略。"""
+    """判断该消息类型是否支持 caption。"""
     return bool(msg.photo or msg.video or msg.audio or msg.animation or msg.document or msg.voice)
 
 
-async def forward_to_admin(context, chat_id, user, messages):
-    """将用户的一条或一组消息转发给管理员，并保存映射。messages 为 Message 对象列表。
-    单条消息会把用户信息合并进同一条；媒体组则把信息作为前置说明。"""
-    header = build_user_header(user, chat_id)
+async def get_or_create_topic(bot, user, chat_id) -> int:
+    """获取或创建该用户在话题群组中对应的话题，返回 message_thread_id。
+    首次创建时以用户名命名话题，并发送一条用户信息卡片。"""
+    topic_id = await asyncio.to_thread(database.get_topic, chat_id)
+    if topic_id:
+        return topic_id
 
-    # 单条消息：尽量合并成一条
-    if len(messages) == 1:
-        msg = messages[0]
-        mid = msg.message_id
+    # 话题名称：显示名 + ID，最长 128 字符
+    name = f"{user.first_name or ''} {user.last_name or ''}".strip() or f"用户{chat_id}"
+    name = name[:120] + f" · {chat_id}"
 
-        # 纯文本：信息 + 内容合并为一条文本消息
-        if msg.text is not None and not msg.effective_attachment:
-            combined = f"{header}\n{html.escape(msg.text)}"
-            sent = await context.bot.send_message(chat_id=ADMIN_ID, text=combined, parse_mode="HTML")
-            await asyncio.to_thread(database.save_mapping, sent.message_id, chat_id, mid)
-            return
+    topic = await bot.create_forum_topic(chat_id=ADMIN_ID, name=name)
+    topic_id = topic.message_thread_id
+    await asyncio.to_thread(database.save_topic, chat_id, topic_id)
 
-        # 支持 caption 的媒体（图片/视频/音频/动画/文档/语音）：把来源信息作为 caption 前缀
-        # 注意：贴纸/视频笔记/位置/联系人等不支持 caption，copy_message 会“静默忽略” caption 而非报错，
-        # 因此必须在调用前判断类型，否则信息头会丢失（贴纸显示不出发送者）。
-        if supports_caption(msg):
-            orig_caption = msg.caption or ""
-            new_caption = header + (f"\n{html.escape(orig_caption)}" if orig_caption else "")
-            sent = await context.bot.copy_message(
-                chat_id=ADMIN_ID, from_chat_id=chat_id, message_id=mid,
-                caption=new_caption, parse_mode="HTML",
-            )
-            await asyncio.to_thread(database.save_mapping, sent.message_id, chat_id, mid)
-            return
+    # 发送用户信息卡片作为话题首条消息
+    info = f"🆔 <code>{chat_id}</code>"
+    if user.username:
+        info += f"\n📎 @{html.escape(user.username)}"
+    await bot.send_message(
+        chat_id=ADMIN_ID, message_thread_id=topic_id,
+        text=info, parse_mode="HTML"
+    )
+    log.info(f"为用户 {chat_id} ({name}) 创建了新话题 {topic_id}")
+    return topic_id
 
-        # 不支持 caption 的内容（贴纸/语音笔记/视频笔记/位置等）：先发来源信息，再发内容，两条都建立映射
-        info_msg = await context.bot.send_message(chat_id=ADMIN_ID, text=header, parse_mode="HTML")
-        await asyncio.to_thread(database.save_mapping, info_msg.message_id, chat_id, mid)
-        fwd_msg = await context.bot.copy_message(chat_id=ADMIN_ID, from_chat_id=chat_id, message_id=mid)
-        await asyncio.to_thread(database.save_mapping, fwd_msg.message_id, chat_id, mid)
-        return
 
-    # 媒体组（多条）：先发一条来源信息，再整组转发
-    info_msg = await context.bot.send_message(chat_id=ADMIN_ID, text=header, parse_mode="HTML")
-    await asyncio.to_thread(database.save_mapping, info_msg.message_id, chat_id, messages[0].message_id)
+async def forward_to_topic(context, chat_id, user, messages):
+    """将用户消息转发到话题群组中对应的话题，并保存映射。"""
+    topic_id = await get_or_create_topic(context.bot, user, chat_id)
+
     for msg in messages:
-        fwd_msg = await context.bot.copy_message(chat_id=ADMIN_ID, from_chat_id=chat_id, message_id=msg.message_id)
-        await asyncio.to_thread(database.save_mapping, fwd_msg.message_id, chat_id, msg.message_id)
+        try:
+            sent = await context.bot.copy_message(
+                chat_id=ADMIN_ID,
+                from_chat_id=chat_id,
+                message_id=msg.message_id,
+                message_thread_id=topic_id,
+            )
+            await asyncio.to_thread(database.save_mapping, sent.message_id, chat_id, msg.message_id)
+        except Exception as e:
+            log.error(f"转发消息到话题失败：{e}")
 
 
 async def flush_media_group(context: ContextTypes.DEFAULT_TYPE):
@@ -409,9 +394,9 @@ async def flush_media_group(context: ContextTypes.DEFAULT_TYPE):
     if not group:
         return
     try:
-        await forward_to_admin(context, group["chat_id"], group["user"], group["messages"])
+        await forward_to_topic(context, group["chat_id"], group["user"], group["messages"])
     except Exception as e:
-        log.error(f"媒体组转发给管理员失败：{e}")
+        log.error(f"媒体组转发失败：{e}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -419,29 +404,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     msg_id = update.message.message_id
 
-    # 【情况一】管理员的消息
+    # 【情况一】来自话题群组的消息（管理员发出）
     if chat_id == ADMIN_ID:
-        # 优先处理管理员回复消息转发，并自动解除等待状态（防锁死）
+        # 1a. 回复某条转发消息 → 查映射回传（同时用于 /ban 等指令的上下文）
         if update.message.reply_to_message:
             admin_states.pop(ADMIN_ID, None)
             admin_msg_id = update.message.reply_to_message.message_id
             mapping = await asyncio.to_thread(database.get_mapping, admin_msg_id)
-
             if mapping:
                 user_chat_id = mapping[0]
                 try:
-                    # 将管理员的回复"复制"发送给用户，支持各种消息类型（文本、图片等）
                     await context.bot.copy_message(
                         chat_id=user_chat_id,
                         from_chat_id=ADMIN_ID,
-                        message_id=msg_id
+                        message_id=msg_id,
                     )
                 except Exception as e:
-                    await update.message.reply_text(f"❌ 发送失败，用户可能已屏蔽机器人。\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
+                    await update.message.reply_text(
+                        f"❌ 发送失败，用户可能已屏蔽机器人。\n<code>{html.escape(str(e))}</code>",
+                        parse_mode="HTML",
+                    )
             else:
                 await update.message.reply_text("⚠️ 找不到该消息对应的发送者（可能是旧消息或非转发消息）。")
-        # 如果不是回复消息，且处于等待输入关键词状态
-        elif admin_states.get(ADMIN_ID) == 'WAIT_WORD':
+            return
+
+        # 1b. 在用户话题中直接发送（非回复）→ 通过话题 ID 查用户并回传
+        if update.message.is_topic_message and update.message.message_thread_id:
+            topic_id = update.message.message_thread_id
+            user_chat_id = await asyncio.to_thread(database.get_user_by_topic, topic_id)
+            if user_chat_id:
+                try:
+                    await context.bot.copy_message(
+                        chat_id=user_chat_id,
+                        from_chat_id=ADMIN_ID,
+                        message_id=msg_id,
+                    )
+                except Exception as e:
+                    await update.message.reply_text(
+                        f"❌ 发送失败，用户可能已屏蔽机器人。\n<code>{html.escape(str(e))}</code>",
+                        parse_mode="HTML",
+                    )
+            # 不是已知用户话题（如 General 话题）则忽略
+            return
+
+        # 1c. 不在话题内且处于等待输入关键词状态
+        if admin_states.get(ADMIN_ID) == 'WAIT_WORD':
             new_words = update.message.text
             if new_words:
                 current_words = database.get_setting("spam_keywords", "")
@@ -453,24 +460,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.to_thread(database.set_setting, "spam_keywords", ",".join(word_list))
                 admin_states.pop(ADMIN_ID, None)
                 await update.message.reply_text("✅ 关键词已更新。")
-
-                # 重新展示菜单
                 text, reply_markup = build_menu_text_and_keyboard()
                 await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
             else:
                 await update.message.reply_text("⚠️ 请发送纯文本关键词。")
-        else:
-            # 管理员发送的非回复消息，不作处理
-            pass
         return
 
-    # 【情况二】普通用户的消息
+    # 【情况二】普通用户的私聊消息
     # 1. 黑名单拦截
     if await asyncio.to_thread(database.is_banned, chat_id):
         log.info(f"已拦截黑名单用户 {chat_id} 的消息")
         return
 
-    # 2. 人机验证拦截：未验证则发题，不转发
+    # 2. 人机验证拦截
     if database.get_setting("captcha_enabled", "1") == "1":
         if not await asyncio.to_thread(database.is_verified, chat_id):
             if chat_id not in pending_captcha:
@@ -485,13 +487,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⏳ 您发送得太频繁了，请稍后再试。")
         return
 
-    # 4. 广告词过滤拦截
+    # 4. 广告词过滤
     text_content = update.message.text or update.message.caption or ""
     if is_spam(text_content):
         log.warning(f"已拦截用户 {chat_id} 的广告消息：{text_content[:30]}...")
         return
 
-    # 5. 媒体组（相册）聚合：同一 media_group_id 只发一次用户信息，整组一并转发
+    # 5. 媒体组聚合
     if update.message.media_group_id:
         group_id = update.message.media_group_id
         if group_id in media_groups:
@@ -505,11 +507,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.job_queue.run_once(flush_media_group, MEDIA_GROUP_DELAY, data=group_id)
         return
 
-    # 6. 普通单条消息：直接转发
+    # 6. 普通单条消息
     try:
-        await forward_to_admin(context, chat_id, update.effective_user, [update.message])
+        await forward_to_topic(context, chat_id, update.effective_user, [update.message])
     except Exception as e:
-        log.error(f"消息转发给管理员失败：{e}")
+        log.error(f"消息转发失败：{e}")
         await update.message.reply_text("❌ 抱歉，消息转发失败，请稍后再试。")
 
 
@@ -532,16 +534,13 @@ async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application):
-    """启动后注册命令菜单：管理员看到完整指令，普通用户只看到基础指令。"""
+    """启动后注册命令菜单，并向话题群组发送启动提醒。"""
     # 普通用户（默认范围）
     await application.bot.set_my_commands(
-        [
-            BotCommand("start", "开始使用"),
-            BotCommand("help", "使用帮助"),
-        ],
+        [BotCommand("start", "开始使用"), BotCommand("help", "使用帮助")],
         scope=BotCommandScopeDefault(),
     )
-    # 管理员（仅其私聊范围）
+    # 话题群组（管理员在此操作）
     await application.bot.set_my_commands(
         [
             BotCommand("menu", "打开控制面板"),
@@ -555,22 +554,21 @@ async def post_init(application):
     me = await application.bot.get_me()
     log.info(f"机器人已上线：@{me.username}（正在监听消息）")
 
-    # 向管理员发送启动成功提醒（管理员需先与机器人私聊过，否则发送会失败，此处静默忽略不影响启动）
     startup_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    proxy_line = f"\n🌐 代理：<code>{html.escape(PROXY_URL)}</code>" if PROXY_URL else ""
+    proxy_line = f"\n代理：<code>{html.escape(PROXY_URL)}</code>" if PROXY_URL else ""
     try:
         await application.bot.send_message(
             chat_id=ADMIN_ID,
             text=(
-                f"✅ <b>AWRelay 已启动</b>\n\n"
-                f"🤖 机器人：@{me.username}\n"
-                f"🕐 时间：{startup_time}{proxy_line}\n\n"
-                f"正在监听并转发消息。"
+                f"<b>AWRelay 已启动</b>\n\n"
+                f"机器人：@{me.username}\n"
+                f"时间：{startup_time}{proxy_line}\n\n"
+                f"用户私聊消息将转发至对应话题，在话题内直接发送即可回复用户。"
             ),
             parse_mode="HTML",
         )
     except Exception as e:
-        log.warning(f"发送启动提醒失败（管理员可能尚未与机器人私聊）：{e}")
+        log.warning(f"发送启动提醒失败：{e}")
 
 
 # 全局持有锁文件句柄，进程存活期间不释放

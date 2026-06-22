@@ -54,6 +54,13 @@ def init_db():
                 value TEXT
             )
         ''')
+        # 话题群组模式：存储用户 chat_id → 话题 message_thread_id 的映射
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS topics (
+                user_chat_id INTEGER PRIMARY KEY,
+                topic_id INTEGER UNIQUE
+            )
+        ''')
         # 兼容旧库：若 messages 表缺少 created_at 列则补上
         cols = [row[1] for row in cursor.execute("PRAGMA table_info(messages)").fetchall()]
         if "created_at" not in cols:
@@ -94,6 +101,30 @@ def cleanup_old_mappings(days=7):
         cursor = conn.execute('DELETE FROM messages WHERE created_at IS NOT NULL AND created_at < ?', (cutoff,))
         conn.commit()
         return cursor.rowcount
+
+
+def get_topic(user_chat_id):
+    """获取用户对应的话题 ID，不存在返回 None"""
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute('SELECT topic_id FROM topics WHERE user_chat_id = ?', (user_chat_id,)).fetchone()
+        return row[0] if row else None
+
+
+def save_topic(user_chat_id, topic_id):
+    """保存用户与话题的映射"""
+    with _lock:
+        conn = _get_conn()
+        conn.execute('INSERT OR REPLACE INTO topics (user_chat_id, topic_id) VALUES (?, ?)', (user_chat_id, topic_id))
+        conn.commit()
+
+
+def get_user_by_topic(topic_id):
+    """通过话题 ID 反查用户 chat_id，不存在返回 None"""
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute('SELECT user_chat_id FROM topics WHERE topic_id = ?', (topic_id,)).fetchone()
+        return row[0] if row else None
 
 
 def ban_user(user_chat_id):
