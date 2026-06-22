@@ -73,8 +73,10 @@ admin_states = {}                       # 管理员交互式输入状态
 pending_captcha = {}                    # chat_id -> 正确答案，表示该用户正在等待验证
 media_groups = {}                       # media_group_id -> 聚合中的媒体组数据
 user_msg_times = defaultdict(deque)     # chat_id -> 最近消息时间戳，用于限流
+_menu_jobs = {}                         # chat_id -> 菜单自动删除 job
 
-# ---- 限流配置 ----
+# ---- 限流 / 菜单配置 ----
+MENU_AUTO_DELETE_SECS = 60             # 菜单无操作自动删除秒数
 RATE_LIMIT_COUNT = 5        # 时间窗内允许的最大消息数
 RATE_LIMIT_WINDOW = 10      # 限流时间窗（秒）
 MEDIA_GROUP_DELAY = 2.0     # 媒体组聚合等待时间（秒）
@@ -107,6 +109,24 @@ def is_rate_limited(chat_id):
         return True
     dq.append(now)
     return False
+
+
+def _reschedule_menu_delete(context, chat_id: int, msg_id: int):
+    """取消旧计划并重新调度菜单自动删除（每次交互后重置倒计时）。"""
+    old = _menu_jobs.pop(chat_id, None)
+    if old:
+        old.schedule_removal()
+
+    async def _do_delete(ctx):
+        try:
+            await ctx.bot.delete_message(chat_id, msg_id)
+        except Exception:
+            pass
+        _menu_jobs.pop(chat_id, None)
+
+    _menu_jobs[chat_id] = context.job_queue.run_once(
+        _do_delete, MENU_AUTO_DELETE_SECS, name=f"menu_del_{chat_id}"
+    )
 
 
 def build_menu_text_and_keyboard():
@@ -197,8 +217,16 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """打开设置菜单"""
     if not is_admin(update):
         return
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
     text, reply_markup = build_menu_text_and_keyboard()
-    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+    sent = await context.bot.send_message(
+        chat_id=update.effective_chat.id, text=text,
+        reply_markup=reply_markup, parse_mode="HTML"
+    )
+    _reschedule_menu_delete(context, update.effective_chat.id, sent.message_id)
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -228,6 +256,8 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """取消当前的等待输入状态"""
     if not is_admin(update):
         return
+    try: await update.message.delete()
+    except Exception: pass
     if admin_states.pop(ADMIN_ID, None):
         await update.message.reply_text("✅ 已取消当前操作。")
     else:
@@ -270,6 +300,9 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, reply_markup = build_menu_text_and_keyboard()
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
+    # 每次交互后重置菜单自动删除倒计时
+    _reschedule_menu_delete(context, query.message.chat.id, query.message.message_id)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /start 命令"""
@@ -304,6 +337,8 @@ async def ban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """管理员拉黑用户"""
     if not is_admin(update):
         return
+    try: await update.message.delete()
+    except Exception: pass
     if not update.message.reply_to_message:
         await update.message.reply_text("ℹ️ 请<b>回复</b>需要拉黑的用户消息，再发送 /ban", parse_mode="HTML")
         return
@@ -326,6 +361,8 @@ async def unban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """管理员解除拉黑"""
     if not is_admin(update):
         return
+    try: await update.message.delete()
+    except Exception: pass
     if not update.message.reply_to_message:
         await update.message.reply_text("ℹ️ 请<b>回复</b>需要解除拉黑的用户消息，再发送 /unban", parse_mode="HTML")
         return
